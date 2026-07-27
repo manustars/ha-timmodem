@@ -10,11 +10,11 @@ Hub (Technicolor) device:
     GET  /ajax/internet.lua?auto_update=true -> connection status JSON
     GET  /modals/mmpbx-log-modal.lp          -> Call Log HTML (table)
 
-The router does not use session cookies for the authenticated calls in
-our testing; it appears to authorize based on the client's source IP
-(only one admin session at a time). We still use a persistent
-aiohttp.ClientSession so any cookies the router does set are carried
-along automatically.
+The gateway *does* rely on a session cookie set by ``GET /``: without it
+nginx answers 403 to /authenticate. Because the router is addressed by
+IP, the session must use ``CookieJar(unsafe=True)`` — aiohttp's default
+jar silently drops cookies from IP hosts ("Don't accept cookies from
+IPs"), which leaves every authenticated request unauthenticated.
 """
 from __future__ import annotations
 
@@ -104,7 +104,13 @@ class TimHubClient:
         self._base = f"http://{host}:{port}"
         self._username = username
         self._password = password
-        self._session = aiohttp.ClientSession(timeout=DEFAULT_TIMEOUT)
+        # unsafe=True is required: the router is reached by IP, and the default
+        # cookie jar refuses to store or send cookies for IP hosts, so the
+        # session cookie from GET / would be lost and nginx would reply 403.
+        self._session = aiohttp.ClientSession(
+            timeout=DEFAULT_TIMEOUT,
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+        )
         self._csrf_token: str | None = None
 
     async def close(self) -> None:
@@ -125,8 +131,10 @@ class TimHubClient:
             raise TimHubConnectionError(f"Modem non raggiungibile: {err}") from err
 
         _LOGGER.debug(
-            "Pagina di login: HTTP %s, url finale %s, content-type %s, %s byte",
+            "Pagina di login: HTTP %s, url finale %s, content-type %s, %s byte, "
+            "cookie di sessione conservati: %s",
             status, final_url, content_type, len(text),
+            [c.key for c in self._session.cookie_jar] or "NESSUNO",
         )
 
         token = _extract_csrf_token(text)
