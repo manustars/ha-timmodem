@@ -32,7 +32,31 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
-_CSRF_RE = re.compile(r'<meta\s+name=["\']CSRFtoken["\']\s+content=["\']([^"\']+)["\']', re.IGNORECASE)
+_CSRF_NAME_RE = re.compile(r"^\s*CSRFtoken\s*$", re.IGNORECASE)
+
+# Last-resort fallback: token embedded in inline JavaScript rather than markup.
+_CSRF_JS_RE = re.compile(
+    r'CSRFtoken["\']?\s*[:=]\s*["\']([A-Za-z0-9+/=_-]{8,})["\']', re.IGNORECASE
+)
+
+
+def _extract_csrf_token(html: str) -> str | None:
+    """Find the CSRF token regardless of attribute order or quoting style."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    meta = soup.find("meta", attrs={"name": _CSRF_NAME_RE})
+    if meta and meta.get("content"):
+        return meta["content"].strip()
+
+    field = soup.find("input", attrs={"name": _CSRF_NAME_RE})
+    if field and field.get("value"):
+        return field["value"].strip()
+
+    match = _CSRF_JS_RE.search(html)
+    if match:
+        return match.group(1)
+
+    return None
 
 
 class TimHubError(Exception):
@@ -92,14 +116,32 @@ class TimHubClient:
     async def _fetch_csrf_token(self) -> str:
         try:
             async with self._session.get(self._base + "/") as resp:
+                status = resp.status
+                final_url = str(resp.url)
+                content_type = resp.headers.get("Content-Type", "?")
                 text = await resp.text()
         except aiohttp.ClientError as err:
             raise TimHubConnectionError(f"Modem non raggiungibile: {err}") from err
 
-        match = _CSRF_RE.search(text)
-        if not match:
-            raise TimHubAuthError("CSRFtoken non trovato nella pagina di login")
-        return match.group(1)
+        _LOGGER.debug(
+            "Pagina di login: HTTP %s, url finale %s, content-type %s, %s byte",
+            status, final_url, content_type, len(text),
+        )
+
+        token = _extract_csrf_token(text)
+        if token:
+            _LOGGER.debug("CSRFtoken trovato (%s caratteri)", len(token))
+            return token
+
+        # Give the user something actionable instead of a bare "not found".
+        mentions_csrf = "csrf" in text.lower()
+        _LOGGER.debug("Inizio della pagina ricevuta:\n%s", text[:1500])
+        raise TimHubAuthError(
+            f"CSRFtoken non trovato. Il modem ha risposto HTTP {status} da {final_url} "
+            f"({content_type}, {len(text)} byte); la parola 'csrf' "
+            f"{'compare' if mentions_csrf else 'NON compare'} nella pagina. "
+            f"Attiva il logging di debug per vedere l'HTML ricevuto."
+        )
 
     async def login(self) -> None:
         """Perform the SRP-6 login handshake."""
