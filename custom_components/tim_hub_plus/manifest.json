@@ -1,12 +1,12 @@
 {
   "domain": "tim_hub_plus",
   "name": "TIM Hub (Technicolor)",
-  "codeowners": ["@tuo-username"],
+  "codeowners": ["@manustars"],
   "config_flow": true,
-  "documentation": "https://github.com/tuo-username/ha-tim-hub-technicolor",
+  "documentation": "https://github.com/manustars/ha-timmodem",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/tuo-username/ha-tim-hub-technicolor/issues",
+  "issue_tracker": "https://github.com/manustars/ha-timmodem/issues",
   "requirements": ["beautifulsoup4"],
   "version": "0.2.1"
 }
