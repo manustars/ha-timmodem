@@ -19,6 +19,7 @@ along automatically.
 from __future__ import annotations
 
 import binascii
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -143,6 +144,45 @@ class TimHubClient:
             f"Attiva il logging di debug per vedere l'HTML ricevuto."
         )
 
+    async def _post_authenticate(self, data: dict[str, str], step: str) -> dict:
+        """POST to /authenticate and decode the JSON reply.
+
+        The gateway answers with an HTML error page (not JSON) when it rejects
+        the request itself — e.g. a stale CSRF token or a missing Referer — so
+        decode manually and surface what actually came back.
+        """
+        try:
+            async with self._session.post(
+                self._base + "/authenticate",
+                data=data,
+                headers={
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": self._base + "/",
+                    "Origin": self._base,
+                },
+            ) as resp:
+                status = resp.status
+                content_type = resp.headers.get("Content-Type", "?")
+                text = await resp.text()
+        except aiohttp.ClientError as err:
+            raise TimHubConnectionError(
+                f"[{step}] Errore di rete durante il login: {err}"
+            ) from err
+
+        _LOGGER.debug(
+            "[%s] HTTP %s, content-type %s, %s byte, corpo: %s",
+            step, status, content_type, len(text), text[:500],
+        )
+
+        try:
+            return json.loads(text)
+        except ValueError as err:
+            raise TimHubAuthError(
+                f"[{step}] Il modem non ha risposto in JSON (HTTP {status}, "
+                f"{content_type}, {len(text)} byte). Inizio della risposta: "
+                f"{text[:200]!r}"
+            ) from err
+
     async def login(self) -> None:
         """Perform the SRP-6 login handshake."""
         token = await self._fetch_csrf_token()
@@ -155,21 +195,14 @@ class TimHubClient:
             uname, token, self._base,
         )
 
-        try:
-            async with self._session.post(
-                self._base + "/authenticate",
-                data={
-                    "CSRFtoken": token,
-                    "I": uname,
-                    "A": binascii.hexlify(a_bytes).decode("ascii"),
-                },
-                headers={"X-Requested-With": "XMLHttpRequest"},
-            ) as resp:
-                challenge = await resp.json(content_type=None)
-        except aiohttp.ClientError as err:
-            raise TimHubConnectionError(f"Errore di rete durante il login: {err}") from err
-
-        _LOGGER.debug("Login step 1: risposta del modem = %s", challenge)
+        challenge = await self._post_authenticate(
+            {
+                "CSRFtoken": token,
+                "I": uname,
+                "A": binascii.hexlify(a_bytes).decode("ascii"),
+            },
+            "step 1/2",
+        )
 
         if "error" in challenge:
             raise TimHubAuthError(
@@ -188,16 +221,13 @@ class TimHubClient:
         if m_bytes is None:
             raise TimHubAuthError("Controllo di sicurezza SRP fallito (valore B non valido)")
 
-        async with self._session.post(
-            self._base + "/authenticate",
-            data={"CSRFtoken": token, "M": binascii.hexlify(m_bytes).decode("ascii")},
-            headers={"X-Requested-With": "XMLHttpRequest"},
-        ) as resp:
-            result = await resp.json(content_type=None)
-
         _LOGGER.debug(
-            "Login step 2: salt=%s byte (primo byte 0x%02x), risposta del modem = %s",
-            len(bytes_s), bytes_s[0] if bytes_s else 0, result,
+            "Login step 2: salt=%s byte (primo byte 0x%02x)",
+            len(bytes_s), bytes_s[0] if bytes_s else 0,
+        )
+        result = await self._post_authenticate(
+            {"CSRFtoken": token, "M": binascii.hexlify(m_bytes).decode("ascii")},
+            "step 2/2",
         )
 
         if "error" in result:
@@ -230,7 +260,18 @@ class TimHubClient:
         async with self._session.get(
             self._base + "/ajax/internet.lua", params={"auto_update": "true"}
         ) as resp:
-            data = await resp.json(content_type=None)
+            status = resp.status
+            text = await resp.text()
+
+        try:
+            data = json.loads(text)
+        except ValueError as err:
+            # Usually means the session is no longer authorised and the gateway
+            # served the login page instead of the status JSON.
+            raise TimHubError(
+                f"Stato connessione non in JSON (HTTP {status}, {len(text)} byte): "
+                f"{text[:200]!r}"
+            ) from err
 
         ppp_status = data.get("ppp_status")
         return ConnectionStatus(
