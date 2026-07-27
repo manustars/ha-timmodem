@@ -81,6 +81,13 @@ class ConnectionStatus:
     raw: dict = field(default_factory=dict)
 
 
+# The gateway labels call types in its own wording (and language), so match
+# loosely rather than against one exact string.
+_MISSED_LABELS = ("missed", "pers")
+_INCOMING_LABELS = ("received", "ricevut", "incoming", "entrant", "answered")
+_OUTGOING_LABELS = ("dialed", "outgoing", "effettuat", "uscent", "placed")
+
+
 @dataclass
 class CallLogEntry:
     time: str
@@ -89,6 +96,18 @@ class CallLogEntry:
     remote_number: str
     duration: str
     port: str
+
+    @property
+    def kind(self) -> str:
+        """Normalised call type: persa / ricevuta / effettuata / sconosciuta."""
+        raw = self.call_type.strip().lower()
+        if any(label in raw for label in _MISSED_LABELS):
+            return "persa"
+        if any(label in raw for label in _INCOMING_LABELS):
+            return "ricevuta"
+        if any(label in raw for label in _OUTGOING_LABELS):
+            return "effettuata"
+        return "sconosciuta"
 
 
 @dataclass
@@ -313,6 +332,13 @@ class TimHubClient:
                         port=cells[5].get_text(strip=True),
                     )
                 )
+
+        if result.entries:
+            _LOGGER.debug(
+                "Registro chiamate: %s voci, tipi grezzi trovati: %s",
+                len(result.entries),
+                sorted({f"{e.call_type!r}->{e.kind}" for e in result.entries}),
+            )
 
         stats_tables = soup.find_all("table", id="stats")
         if stats_tables:
