@@ -115,7 +115,7 @@ class TimHubClient:
                 data={
                     "CSRFtoken": token,
                     "I": uname,
-                    "A": binascii.hexlify(a_bytes),
+                    "A": binascii.hexlify(a_bytes).decode("ascii"),
                 },
                 headers={"X-Requested-With": "XMLHttpRequest"},
             ) as resp:
@@ -138,7 +138,7 @@ class TimHubClient:
 
         async with self._session.post(
             self._base + "/authenticate",
-            data={"CSRFtoken": token, "M": binascii.hexlify(m_bytes)},
+            data={"CSRFtoken": token, "M": binascii.hexlify(m_bytes).decode("ascii")},
             headers={"X-Requested-With": "XMLHttpRequest"},
         ) as resp:
             result = await resp.json(content_type=None)
