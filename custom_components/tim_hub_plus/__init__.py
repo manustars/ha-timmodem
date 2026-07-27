@@ -22,9 +22,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     coordinator = TimHubCoordinator(
-        hass, client, entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL)
+        hass, entry, client, entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL)
     )
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception:
+        # Otherwise the aiohttp session leaks on every setup retry.
+        await client.close()
+        raise
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator

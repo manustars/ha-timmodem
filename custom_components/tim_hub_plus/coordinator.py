@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -22,10 +23,17 @@ class TimHubData:
 class TimHubCoordinator(DataUpdateCoordinator[TimHubData]):
     """Log in once per cycle and fetch all data."""
 
-    def __init__(self, hass: HomeAssistant, client: TimHubClient, update_interval: int) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: TimHubClient,
+        update_interval: int,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name="TIM Hub status",
             update_interval=timedelta(seconds=update_interval),
         )

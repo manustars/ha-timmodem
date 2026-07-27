@@ -7,8 +7,8 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.data_entry_flow import FlowResult
 
 from .api import TimHubAuthError, TimHubClient, TimHubConnectionError
 from .const import DEFAULT_PORT, DOMAIN
@@ -32,7 +32,7 @@ class TimHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -45,10 +45,10 @@ class TimHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 await client.login()
             except TimHubConnectionError as err:
-                _LOGGER.debug("Connessione al modem fallita: %s", err)
+                _LOGGER.error("Connessione al modem fallita: %s", err)
                 errors["base"] = "cannot_connect"
             except TimHubAuthError as err:
-                _LOGGER.debug("Autenticazione fallita: %s", err)
+                _LOGGER.error("Autenticazione fallita: %s", err)
                 errors["base"] = "invalid_auth"
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Errore inatteso durante la validazione")

@@ -108,6 +108,10 @@ class TimHubClient:
 
         user = SRPUser(self._username, self._password)
         uname, a_bytes = user.start_authentication()
+        _LOGGER.debug(
+            "Login step 1: utente=%r, CSRFtoken=%r, endpoint=%s/authenticate",
+            uname, token, self._base,
+        )
 
         try:
             async with self._session.post(
@@ -123,14 +127,20 @@ class TimHubClient:
         except aiohttp.ClientError as err:
             raise TimHubConnectionError(f"Errore di rete durante il login: {err}") from err
 
+        _LOGGER.debug("Login step 1: risposta del modem = %s", challenge)
+
         if "error" in challenge:
-            raise TimHubAuthError(f"Login rifiutato dal modem: {challenge['error']}")
+            raise TimHubAuthError(
+                f"[step 1/2] Il modem ha rifiutato l'utente {uname!r}: {challenge['error']}"
+            )
 
         try:
             bytes_s = binascii.unhexlify(challenge["s"])
             bytes_b = binascii.unhexlify(challenge["B"])
         except (KeyError, binascii.Error) as err:
-            raise TimHubAuthError(f"Risposta di login inattesa: {challenge}") from err
+            raise TimHubAuthError(
+                f"[step 1/2] Risposta di login inattesa (manca s/B): {challenge}"
+            ) from err
 
         m_bytes = user.process_challenge(bytes_s, bytes_b)
         if m_bytes is None:
@@ -143,21 +153,31 @@ class TimHubClient:
         ) as resp:
             result = await resp.json(content_type=None)
 
+        _LOGGER.debug(
+            "Login step 2: salt=%s byte (primo byte 0x%02x), risposta del modem = %s",
+            len(bytes_s), bytes_s[0] if bytes_s else 0, result,
+        )
+
         if "error" in result:
             raise TimHubAuthError(
-                "Utente o password errati (o troppi tentativi falliti di recente)."
+                f"[step 2/2] Il modem ha respinto la prova di password per l'utente "
+                f"{uname!r}: {result['error']} — password errata, oppure troppi "
+                f"tentativi falliti di recente."
             )
 
         try:
             host_hamk = binascii.unhexlify(result["M"])
         except (KeyError, binascii.Error) as err:
-            raise TimHubAuthError(f"Risposta di conferma login inattesa: {result}") from err
+            raise TimHubAuthError(
+                f"[step 2/2] Risposta di conferma login inattesa (manca M): {result}"
+            ) from err
 
         user.verify_session(host_hamk)
         if not user.authenticated():
             raise TimHubAuthError(
-                "Verifica finale della sessione fallita: il modem non ha confermato "
-                "di conoscere la password (possibile problema di rete/proxy)."
+                "[verifica finale] Il modem ha accettato la password ma la sua prova "
+                "di ritorno (H_AMK) non corrisponde: variante SRP diversa da quella "
+                "attesa per questo firmware."
             )
 
     # ------------------------------------------------------------------

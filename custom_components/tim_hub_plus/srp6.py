@@ -95,7 +95,7 @@ class SRPUser:
         self.a = _get_random_of_length(32)
         self.A = pow(self.g, self.a, self.N)
 
-        self.s: int | None = None
+        self.s: bytes | None = None
         self.B: int | None = None
         self.K: bytes | None = None
         self.M: bytes | None = None
@@ -108,7 +108,10 @@ class SRPUser:
 
     def process_challenge(self, bytes_s: bytes, bytes_b: bytes) -> bytes | None:
         """Given server salt + B, compute and return M (proof) to send back."""
-        self.s = _bytes_to_long(bytes_s)
+        # Keep the salt as raw bytes: converting it to an int and back would
+        # strip any leading zero bytes, producing a different x and M than the
+        # server computed (pysrp keeps it as bytes for exactly this reason).
+        self.s = bytes_s
         self.B = _bytes_to_long(bytes_b)
 
         if (self.B % self.N) == 0:
@@ -127,7 +130,7 @@ class SRPUser:
         hasher = hashlib.sha256()
         hasher.update(_h_n_xor_g(self.N, self.g))
         hasher.update(hashlib.sha256(self.I.encode("latin-1")).digest())
-        hasher.update(_long_to_bytes(self.s))
+        hasher.update(self.s)
         hasher.update(_long_to_bytes(self.A))
         hasher.update(_long_to_bytes(self.B))
         hasher.update(self.K)
