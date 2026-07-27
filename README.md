@@ -71,7 +71,7 @@ logger:
 
 ## Aggiungere il riavvio in futuro
 
-1. Apri gli Strumenti sviluppatore del browser (F12) → scheda **Network**
+1. Apri gli Strumenti sviluppatore del browser (F12) → scheda (da verificare) **Network**
    → assicurati che la registrazione sia attiva ("Preserve log").
 2. Nella GUI del modem, vai al pulsante di riavvio effettivo e cliccalo
    (**attenzione: questo riavvierà davvero il modem**).
