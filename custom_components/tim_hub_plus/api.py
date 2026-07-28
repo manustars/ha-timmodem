@@ -87,6 +87,28 @@ _MISSED_LABELS = ("missed", "pers")
 _INCOMING_LABELS = ("received", "ricevut", "incoming", "entrant", "answered")
 _OUTGOING_LABELS = ("dialed", "outgoing", "effettuat", "uscent", "placed")
 
+# What the gateway writes in the "Remote Number" column when caller ID is not
+# available — e.g. "unsubscribed" when the CLI service is not active on the
+# line. These are placeholders, not phone numbers.
+_PLACEHOLDER_NUMBERS = frozenset(
+    {
+        "",
+        "-",
+        "n/a",
+        "na",
+        "unsubscribed",
+        "unknown",
+        "unavailable",
+        "private",
+        "anonymous",
+        "restricted",
+        "withheld",
+        "sconosciuto",
+        "anonimo",
+        "riservato",
+    }
+)
+
 
 @dataclass
 class CallLogEntry:
@@ -96,6 +118,7 @@ class CallLogEntry:
     remote_number: str
     duration: str
     port: str
+    raw_cells: list[str] = field(default_factory=list)
 
     @property
     def kind(self) -> str:
@@ -109,11 +132,86 @@ class CallLogEntry:
             return "effettuata"
         return "sconosciuta"
 
+    @property
+    def has_remote_number(self) -> bool:
+        """False when the gateway had no caller ID to record."""
+        return self.remote_number.strip().lower() not in _PLACEHOLDER_NUMBERS
+
+    @property
+    def outcome(self) -> str:
+        """Call result: riuscita / fallita / persa / sconosciuto."""
+        raw = self.call_type.strip().lower()
+        if any(label in raw for label in _MISSED_LABELS):
+            return "persa"
+        if "fail" in raw or "fallit" in raw:
+            return "fallita"
+        if "success" in raw or "riuscit" in raw:
+            return "riuscita"
+        return "sconosciuto"
+
 
 @dataclass
 class CallLogResult:
     entries: list[CallLogEntry] = field(default_factory=list)
     stats_by_device: list[dict] = field(default_factory=list)
+    headers: list[str] = field(default_factory=list)
+
+
+# Column headers differ between firmware versions (and languages), so locate
+# each field by its heading instead of assuming a fixed column order.
+_COLUMN_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("remote_number", ("remote", "remoto", "caller", "chiamante", "corrispondente")),
+    ("local_number", ("local", "locale", "linea", "line")),
+    ("time", ("time", "orario", "ora", "data", "date")),
+    ("call_type", ("type", "tipo")),
+    ("duration", ("durat", "length")),
+    ("port", ("port", "servi", "device", "dispositiv")),
+)
+
+_FALLBACK_ORDER = ("time", "call_type", "local_number", "remote_number", "duration", "port")
+
+
+def _map_columns(headers: list[str]) -> dict[str, int]:
+    """Map field names to column indices using the table headings."""
+    mapping: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        text = header.strip().lower()
+        for field_name, keywords in _COLUMN_RULES:
+            if field_name not in mapping and any(k in text for k in keywords):
+                mapping[field_name] = index
+                break
+
+    # A single generic "Number" column means the other party's number.
+    if "remote_number" not in mapping:
+        taken = set(mapping.values())
+        for index, header in enumerate(headers):
+            if index not in taken and any(
+                k in header.strip().lower() for k in ("number", "numero")
+            ):
+                mapping["remote_number"] = index
+                break
+
+    return mapping
+
+
+def _entry_from_cells(cells: list[str], mapping: dict[str, int]) -> CallLogEntry | None:
+    """Build an entry from one row, by header mapping or by position."""
+    if mapping and max(mapping.values()) < len(cells):
+        values = {name: cells[index] for name, index in mapping.items()}
+    elif len(cells) == len(_FALLBACK_ORDER):
+        values = dict(zip(_FALLBACK_ORDER, cells, strict=True))
+    else:
+        return None
+
+    return CallLogEntry(
+        time=values.get("time", ""),
+        call_type=values.get("call_type", ""),
+        local_number=values.get("local_number", ""),
+        remote_number=values.get("remote_number", ""),
+        duration=values.get("duration", ""),
+        port=values.get("port", ""),
+        raw_cells=cells,
+    )
 
 
 class TimHubClient:
@@ -318,20 +416,23 @@ class TimHubClient:
 
         calllog_table = soup.find("table", id="calllog")
         if calllog_table:
+            result.headers = [
+                th.get_text(strip=True) for th in calllog_table.find_all("th")
+            ]
+            mapping = _map_columns(result.headers)
+            _LOGGER.debug(
+                "Registro chiamate: intestazioni %s -> mappatura colonne %s",
+                result.headers, mapping,
+            )
+
             for row in calllog_table.find_all("tr"):
-                cells = row.find_all("td")
-                if len(cells) != 6:
-                    continue
-                result.entries.append(
-                    CallLogEntry(
-                        time=cells[0].get_text(strip=True),
-                        call_type=cells[1].get_text(strip=True),
-                        local_number=cells[2].get_text(strip=True),
-                        remote_number=cells[3].get_text(strip=True),
-                        duration=cells[4].get_text(strip=True),
-                        port=cells[5].get_text(strip=True),
-                    )
-                )
+                cells = [td.get_text(strip=True) for td in row.find_all("td")]
+                if not cells:
+                    continue  # riga di intestazione
+
+                entry = _entry_from_cells(cells, mapping)
+                if entry is not None:
+                    result.entries.append(entry)
 
         if result.entries:
             _LOGGER.debug(
