@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -15,6 +16,7 @@ from .api import (
     ConnectionStatus,
     ModemSettings,
     NetworkDevice,
+    TimHubAuthError,
     TimHubClient,
     TimHubError,
 )
@@ -60,6 +62,10 @@ class TimHubCoordinator(DataUpdateCoordinator[TimHubData]):
             await self.client.login()
             connection = await self.client.get_connection_status()
             call_log = await self.client.get_call_log()
+        except TimHubAuthError as err:
+            # Ritentare ogni 30 secondi con credenziali rifiutate fa scattare il
+            # blocco tentativi del modem: meglio fermarsi e chiedere la password.
+            raise ConfigEntryAuthFailed(str(err)) from err
         except TimHubError as err:
             raise UpdateFailed(str(err)) from err
 

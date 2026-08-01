@@ -9,15 +9,24 @@
           "username": "Nome utente",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "Credenziali del TIM Hub",
+        "description": "Il modem {host} ha rifiutato le credenziali salvate. Inseriscile di nuovo.",
+        "data": {
+          "username": "Nome utente",
+          "password": "Password"
+        }
       }
     },
     "error": {
       "cannot_connect": "Impossibile raggiungere il modem. Controlla l'indirizzo IP.",
-      "invalid_auth": "Utente o password non corretti.",
+      "invalid_auth": "Utente o password non corretti. Attenzione: dopo alcuni tentativi errati il modem blocca l'accesso per qualche minuto.",
       "unknown": "Errore imprevisto."
     },
     "abort": {
-      "already_configured": "Questo modem è già configurato."
+      "already_configured": "Questo modem è già configurato.",
+      "reauth_successful": "Credenziali aggiornate."
     }
   }
 }

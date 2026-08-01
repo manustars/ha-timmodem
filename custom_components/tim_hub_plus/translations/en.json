@@ -2,22 +2,31 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connetti il tuo TIM Hub",
+        "title": "Connect your TIM Hub",
         "data": {
-          "host": "Indirizzo IP del modem",
-          "port": "Porta",
-          "username": "Nome utente",
+          "host": "Modem IP address",
+          "port": "Port",
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "TIM Hub credentials",
+        "description": "The modem at {host} rejected the stored credentials. Please enter them again.",
+        "data": {
+          "username": "Username",
           "password": "Password"
         }
       }
     },
     "error": {
-      "cannot_connect": "Impossibile raggiungere il modem. Controlla l'indirizzo IP.",
-      "invalid_auth": "Utente o password non corretti.",
-      "unknown": "Errore imprevisto."
+      "cannot_connect": "Cannot reach the modem. Check the IP address.",
+      "invalid_auth": "Wrong username or password. Note: after a few failed attempts the modem locks logins for some minutes.",
+      "unknown": "Unexpected error."
     },
     "abort": {
-      "already_configured": "Questo modem è già configurato."
+      "already_configured": "This modem is already configured.",
+      "reauth_successful": "Credentials updated."
     }
   }
 }

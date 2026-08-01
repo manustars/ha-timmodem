@@ -1,23 +1,27 @@
-"""SRP-6 client implementation for Technicolor gateways (TIM Hub / Hub+).
+"""SRP-6 client for Technicolor gateways (TIM Hub / Hub+).
 
-Ported from the verified, community-tested implementation in
-https://pypi.org/project/pytechnicolor/ (itself derived from
-https://github.com/cocagne/pysrp), which is confirmed to work against
-TIM Hub (Technicolor AGHP/DGA4132 and similar) gateways.
+Replicates, byte for byte, the client the gateway itself serves at
+``/js/srp-min.js`` (funzione ``SRP()``). Every step below was verified
+against that code running in Node with fixed inputs, because the details
+that differ from a textbook SRP-6 client are exactly the ones that make
+the router answer ``M didn't match``:
 
-Note this is SRP-6 (fixed multiplier k), not SRP-6a (k = H(N, g)) — the
-router firmware uses the older fixed-k variant, so we replicate that
-exactly rather than using a generic/standard SRP-6a library.
+* strings (``I``, ``I:P``) are hashed as **UTF-8**, not latin-1;
+* ``u = H(PAD(A) || PAD(B))`` with both values left-padded to 256 bytes
+  (``q`` in the minified source);
+* ``s`` and ``B`` go into ``M`` exactly as the server sent them, so a
+  leading zero byte must not be dropped — which is what happens if they
+  are round-tripped through an integer;
+* ``A``, ``S`` are hashed as their minimal big-endian encoding instead.
+
+This is SRP-6 with a fixed multiplier k (not SRP-6a's k = H(N, g)).
 """
 from __future__ import annotations
 
 import hashlib
-import operator
 import os
 
-SHA256 = "sha256"
-
-# RFC 5054, 2048-bit group (N, g). This is the group used by the router.
+# RFC 5054, 2048-bit group, as hardcoded in srp-min.js.
 _N_HEX = (
     "AC6BDB41324A9A9BF166DE5E1389582FAF72B6651987EE07FC3192943DB56050A373"
     "29CBB4A099ED8193E0757767A13DD52312AB4B03310DCD7F48A9DA04FD50E80839"
@@ -28,71 +32,56 @@ _N_HEX = (
     "299CCC041C7BC308D82A5698F3A8D0C38271AE35F8E9DBFBB694B5C803D89F7AE4"
     "35DE236D525F54759B65E372FCD68EF20FA7111F9E4AFF73"
 )
-_G_HEX = "2"
+_N = int(_N_HEX, 16)
+_G = 2
 
-# Fixed multiplier 'k' used by this router's SRP-6 variant (not H(N,g) as
-# in SRP-6a). This value comes directly from the verified reference
-# implementation.
+# Fixed multiplier k, copied from srp-min.js (there: the BigInteger "C").
 _K = int("05b9e8ef059c6b32ea59fc1d322d37f04aa30bae5aa9003b8321e21ddb04e300", 16)
 
+# Width A and B are padded to before hashing them into u ("q" in the JS).
+_PAD_WIDTH = 256
 
-def _bytes_to_long(b: bytes) -> int:
-    n = 0
-    for byte in b:
-        n = (n << 8) | byte
-    return n
-
-
-def _long_to_bytes(n: int) -> bytes:
-    out = bytearray()
-    x = 0
-    off = 0
-    while x != n:
-        byte = (n >> off) & 0xFF
-        out.append(byte)
-        x |= byte << off
-        off += 8
-    out.reverse()
-    return bytes(out)
+# Private exponent size, matching "new BigInteger(256, w)" in the JS.
+_EXPONENT_BITS = 256
 
 
-def _get_random_of_length(nbytes: int) -> int:
-    offset = (nbytes * 8) - 1
-    return _bytes_to_long(os.urandom(nbytes)) | (1 << offset)
-
-
-def _h(*args: int | str | bytes) -> int:
-    """Concatenate args (as bytes) and return SHA-256 digest as an int."""
+def _sha256(*chunks: bytes) -> bytes:
     hasher = hashlib.sha256()
-    for value in args:
-        if value is None:
-            continue
-        if isinstance(value, int):
-            hasher.update(_long_to_bytes(value))
-        elif isinstance(value, str):
-            hasher.update(value.encode("latin-1"))
-        else:
-            hasher.update(value)
-    return int(hasher.hexdigest(), 16)
+    for chunk in chunks:
+        hasher.update(chunk)
+    return hasher.digest()
 
 
-def _h_n_xor_g(n: int, g: int) -> bytes:
-    h_n = hashlib.sha256(_long_to_bytes(n)).digest()
-    h_g = hashlib.sha256(_long_to_bytes(g)).digest()
-    return bytes(operator.xor(a, b) for a, b in zip(h_n, h_g, strict=True))
+def _long_to_bytes(value: int) -> bytes:
+    """Minimal big-endian encoding, i.e. the JS ``toString(16)`` padded even."""
+    return value.to_bytes(max(1, (value.bit_length() + 7) // 8), "big")
+
+
+def _pad(value: int) -> bytes:
+    return value.to_bytes(_PAD_WIDTH, "big")
+
+
+# H(N) xor H(g): the JS ships this precomputed as the constant "u"; the value
+# below reproduces it exactly (checked against 4a76a9a2...4b29cc4c).
+_H_N_XOR_G = bytes(
+    a ^ b
+    for a, b in zip(
+        _sha256(_long_to_bytes(_N)), _sha256(_long_to_bytes(_G)), strict=True
+    )
+)
 
 
 class SRPUser:
     """Client-side SRP-6 session, matching this router's exact variant."""
 
     def __init__(self, username: str, password: str) -> None:
-        self.N = int(_N_HEX, 16)
-        self.g = int(_G_HEX, 16)
+        self.N = _N
+        self.g = _G
         self.k = _K
 
         self.I = username  # noqa: E741 (matches SRP spec naming)
         self.p = password
-        self.a = _get_random_of_length(32)
+        self.a = int.from_bytes(os.urandom(_EXPONENT_BITS // 8), "big")
         self.A = pow(self.g, self.a, self.N)
 
         self.s: bytes | None = None
@@ -108,39 +97,34 @@ class SRPUser:
 
     def process_challenge(self, bytes_s: bytes, bytes_b: bytes) -> bytes | None:
         """Given server salt + B, compute and return M (proof) to send back."""
-        # Keep the salt as raw bytes: converting it to an int and back would
-        # strip any leading zero bytes, producing a different x and M than the
-        # server computed (pysrp keeps it as bytes for exactly this reason).
         self.s = bytes_s
-        self.B = _bytes_to_long(bytes_b)
+        self.B = int.from_bytes(bytes_b, "big")
 
         if (self.B % self.N) == 0:
-            return None  # SRP-6a safety check
+            return None  # safety check, as in the router's own client
 
-        u = _h(self.A, self.B)
+        u = int.from_bytes(_sha256(_pad(self.A), _pad(self.B)), "big")
         if u == 0:
-            return None  # SRP-6a safety check
+            return None
 
-        x = _h(self.s, _h(f"{self.I}:{self.p}"))
+        x = int.from_bytes(
+            _sha256(bytes_s, _sha256(f"{self.I}:{self.p}".encode())), "big"
+        )
         v = pow(self.g, x, self.N)
 
-        s_val = pow((self.B - self.k * v) % self.N, (self.a + u * x), self.N)
-        self.K = hashlib.sha256(_long_to_bytes(s_val)).digest()
+        exponent = (self.a + (u * x) % self.N) % self.N
+        s_val = pow((self.B - self.k * v) % self.N, exponent, self.N)
+        self.K = _sha256(_long_to_bytes(s_val))
 
-        hasher = hashlib.sha256()
-        hasher.update(_h_n_xor_g(self.N, self.g))
-        hasher.update(hashlib.sha256(self.I.encode("latin-1")).digest())
-        hasher.update(self.s)
-        hasher.update(_long_to_bytes(self.A))
-        hasher.update(_long_to_bytes(self.B))
-        hasher.update(self.K)
-        self.M = hasher.digest()
-
-        hasher2 = hashlib.sha256()
-        hasher2.update(_long_to_bytes(self.A))
-        hasher2.update(self.M)
-        hasher2.update(self.K)
-        self.H_AMK = hasher2.digest()
+        self.M = _sha256(
+            _H_N_XOR_G,
+            _sha256(self.I.encode()),
+            bytes_s,
+            _long_to_bytes(self.A),
+            bytes_b,
+            self.K,
+        )
+        self.H_AMK = _sha256(_long_to_bytes(self.A), self.M, self.K)
 
         return self.M
 

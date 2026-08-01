@@ -67,6 +67,26 @@ def _extract_csrf_token(html: str) -> str | None:
     return None
 
 
+def _describe_auth_error(error) -> str:
+    """Render the gateway's error payload.
+
+    With the "login failure" feature on (``loginFailureAttempt`` in the login
+    page) the gateway answers with a counter and a lockout timer instead of a
+    plain message.
+    """
+    if isinstance(error, dict):
+        wait_time = error.get("waitTime")
+        wrong_count = error.get("wrongCount")
+        parts = []
+        if wrong_count:
+            parts.append(f"{wrong_count} tentativi errati registrati")
+        if wait_time:
+            parts.append(f"il modem è bloccato per altri {wait_time} secondi")
+        if parts:
+            return "; ".join(parts)
+    return str(error)
+
+
 class TimHubError(Exception):
     """Base error."""
 
@@ -655,7 +675,8 @@ class TimHubClient:
 
         if "error" in challenge:
             raise TimHubAuthError(
-                f"[step 1/2] Il modem ha rifiutato l'utente {uname!r}: {challenge['error']}"
+                f"[step 1/2] Il modem ha rifiutato l'utente {uname!r}: "
+                f"{_describe_auth_error(challenge['error'])}"
             )
 
         try:
@@ -682,8 +703,8 @@ class TimHubClient:
         if "error" in result:
             raise TimHubAuthError(
                 f"[step 2/2] Il modem ha respinto la prova di password per l'utente "
-                f"{uname!r}: {result['error']} — password errata, oppure troppi "
-                f"tentativi falliti di recente."
+                f"{uname!r}: {_describe_auth_error(result['error'])} — password "
+                f"errata, oppure troppi tentativi falliti di recente."
             )
 
         try:

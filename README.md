@@ -55,12 +55,17 @@ richiedono quattro pagine in più e cambiano solo quando le modifichi.
 
 Questa integrazione è basata su:
 
-- **Login SRP-6**: implementazione porting da
-  [pytechnicolor](https://pypi.org/project/pytechnicolor/) (a sua volta
-  derivata da [pysrp](https://github.com/cocagne/pysrp)), verificata
-  come funzionante contro dispositivi TIM Hub / Technicolor AGHP/DGA4132.
-  Riscritta in versione async (`aiohttp`) senza dipendere dal pacchetto
-  `robobrowser` (deprecato) usato dall'originale.
+- **Login SRP-6**: `srp6.py` replica byte per byte il client che il modem
+  stesso serve in `/js/srp-min.js`. Ogni passaggio è stato confrontato con
+  quel codice eseguito in Node su input fissi e casuali (24 casi, zero
+  differenze). Rispetto a un client SRP-6 da manuale contano tre dettagli,
+  ciascuno dei quali fa rispondere `M didn't match` al modem:
+  - `I` e `I:P` si hashano in **UTF-8** (una password con lettere accentate
+    falliva sempre);
+  - `u = H(PAD(A) || PAD(B))` con entrambi i valori riempiti a 256 byte;
+  - `s` e `B` entrano in `M` **esattamente come li invia il server**: un
+    byte iniziale a zero non va perso (succedeva convertendoli in intero,
+    con un login fallito ogni ~256).
 - **Stato connessione**: endpoint `GET /ajax/internet.lua?auto_update=true`,
   confermato da una cattura di rete reale del dispositivo dell'utente.
 - **Registro chiamate**: endpoint `GET /modals/mmpbx-log-modal.lp`,
@@ -88,14 +93,11 @@ Lo script fa il login (password chiesta a runtime, mai salvata), stampa i
 dispositivi e le impostazioni riconosciute più tutti i campi grezzi letti
 da ogni pagina, e con `--dump-dir` salva l'HTML originale.
 
-La matematica SRP-6 (`srp6.py`) è stata testata con una simulazione
-completa client↔server prima della consegna: il calcolo lato client
-converge correttamente con un server SRP-6 di riferimento scritto ad hoc
-per il test. Questo conferma che la trascrizione del protocollo è
-corretta, ma **non garantisce al 100% la compatibilità byte-per-byte con
-il firmware specifico del tuo modem** finché non viene testata dal vivo:
-se il login fallisce, abilita il logging di debug (vedi sotto) e
-condividi l'errore.
+Se il modem rifiuta le credenziali, l'integrazione **non ritenta ogni 30
+secondi** (finirebbe per far scattare il blocco tentativi del gateway):
+Home Assistant chiede di reinserire la password con il normale flusso di
+ri-autenticazione. Dopo qualche tentativo errato il modem resta bloccato
+per alcuni minuti, quindi conviene aspettare prima di riprovare.
 
 ## Debug
 
