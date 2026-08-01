@@ -9,7 +9,11 @@ from .api import TimHubClient
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .coordinator import TimHubCoordinator
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.DEVICE_TRACKER,
+    Platform.SENSOR,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

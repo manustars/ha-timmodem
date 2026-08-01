@@ -10,16 +10,16 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .api import CallLogEntry
+from .api import CallLogEntry, ModemSettings, NetworkDevice
 from .const import DOMAIN
 from .coordinator import TimHubCoordinator
+from .entity import device_info as _device_info
 
 MAX_ATTR_ENTRIES = 20  # non esporre l'intero storico come attributo, solo i più recenti
 
@@ -71,16 +71,6 @@ def _parse_time(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
     return parsed
-
-
-def _device_info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name=f"TIM Hub ({entry.data[CONF_HOST]})",
-        manufacturer="TIM / Technicolor",
-        model="TIM Hub (Technicolor)",
-        configuration_url=f"http://{entry.data[CONF_HOST]}",
-    )
 
 
 def _cell(value: str) -> str:
@@ -152,6 +142,11 @@ async def async_setup_entry(
                 kind="persa",
                 state_source="orario",
             ),
+            TimHubDevicesSensor(coordinator, entry),
+            TimHubFirewallLevelSensor(coordinator, entry),
+            TimHubDmzHostSensor(coordinator, entry),
+            TimHubDhcpSensor(coordinator, entry),
+            TimHubSettingsSensor(coordinator, entry),
         ]
     )
 
@@ -324,4 +319,221 @@ class TimHubMissedCallsSensor(TimHubCallSensorBase):
             "registro_markdown": _markdown_table(missed),
             "chiamate_perse_recenti": _as_dicts(missed),
             "statistiche_per_dispositivo": self.coordinator.data.call_log.stats_by_device,
+        }
+
+
+# ----------------------------------------------------------------------
+# Rete e impostazioni
+# ----------------------------------------------------------------------
+
+
+# Il recorder scarta gli stati con attributi troppo grandi (16 KB), e una
+# pagina di configurazione può contenere decine di campi.
+MAX_SETTING_FIELDS = 40
+MAX_SETTING_VALUE = 100
+
+
+def _trimmed(fields: dict[str, str]) -> dict[str, str]:
+    return {
+        key: value[:MAX_SETTING_VALUE]
+        for key, value in list(fields.items())[:MAX_SETTING_FIELDS]
+    }
+
+
+def _devices_markdown(devices: Sequence[NetworkDevice]) -> str:
+    if not devices:
+        return "_Nessun dispositivo rilevato._"
+
+    rows = ["| Dispositivo | IP | MAC | Collegamento |", "|---|---|---|---|"]
+    rows.extend(
+        f"| {_cell(d.display_name)} | {_cell(d.ip)} | {_cell(d.mac)} "
+        f"| {_cell(d.interface)} |"
+        for d in devices
+    )
+    return "\n".join(rows)
+
+
+def _devices_as_dicts(devices: Sequence[NetworkDevice]) -> list[dict]:
+    return [
+        {
+            "nome": d.display_name,
+            "ip": d.ip,
+            "mac": d.mac,
+            "collegamento": d.interface,
+            "connesso": d.connected,
+        }
+        for d in devices
+    ]
+
+
+class TimHubSettingsSensorBase(CoordinatorEntity[TimHubCoordinator], SensorEntity):
+    """Shared access to the settings read from the configuration pages."""
+
+    _attr_has_entity_name = True
+
+    def _settings(self) -> ModemSettings:
+        if self.coordinator.data is None:
+            return ModemSettings()
+        return self.coordinator.data.settings
+
+
+class TimHubDevicesSensor(CoordinatorEntity[TimHubCoordinator], SensorEntity):
+    """How many network interfaces are currently connected, and which."""
+
+    _attr_has_entity_name = True
+    entity_description = SensorEntityDescription(
+        key="connected_devices", name="Dispositivi connessi", icon="mdi:lan-connect"
+    )
+
+    def __init__(self, coordinator: TimHubCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_connected_devices"
+        self._attr_device_info = _device_info(entry)
+
+    def _devices(self) -> list[NetworkDevice]:
+        if self.coordinator.data is None:
+            return []
+        return self.coordinator.data.devices
+
+    @property
+    def native_value(self):
+        if self.coordinator.data is None:
+            return None
+        return sum(1 for d in self._devices() if d.connected)
+
+    @property
+    def extra_state_attributes(self):
+        devices = self._devices()
+        connected = [d for d in devices if d.connected]
+
+        per_interface: dict[str, int] = {}
+        for device in connected:
+            per_interface[device.interface or "sconosciuto"] = (
+                per_interface.get(device.interface or "sconosciuto", 0) + 1
+            )
+
+        return {
+            "totale_rilevati": len(devices),
+            "indirizzi_ip": [d.ip for d in connected if d.ip],
+            "indirizzi_mac": [d.mac for d in connected],
+            "per_collegamento": per_interface,
+            "dispositivi": _devices_as_dicts(connected),
+            "dispositivi_non_connessi": _devices_as_dicts(
+                [d for d in devices if not d.connected]
+            ),
+            "elenco_markdown": _devices_markdown(connected),
+            # Diagnostica: se nomi o IP non tornano, qui si vede cosa manda il modem.
+            "righe_grezze": [d.raw_cells for d in devices[:5]],
+        }
+
+
+class TimHubFirewallLevelSensor(TimHubSettingsSensorBase):
+    """Firewall level configured on the modem (Basso / Medio / Alto / ...)."""
+
+    entity_description = SensorEntityDescription(
+        key="firewall_level", name="Livello firewall", icon="mdi:security"
+    )
+
+    def __init__(self, coordinator: TimHubCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_firewall_level"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self):
+        return self._settings().firewall_level
+
+    @property
+    def extra_state_attributes(self):
+        settings = self._settings()
+        return {
+            "ping_dall_esterno": settings.ping_response_enabled,
+            "accesso_remoto": settings.remote_access_enabled,
+            "upnp": settings.upnp_enabled,
+        }
+
+
+class TimHubDmzHostSensor(TimHubSettingsSensorBase):
+    """LAN host exposed in the DMZ, if any."""
+
+    entity_description = SensorEntityDescription(
+        key="dmz_host", name="Host DMZ", icon="mdi:security-network"
+    )
+
+    def __init__(self, coordinator: TimHubCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_dmz_host"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self):
+        settings = self._settings()
+        if settings.dmz_enabled is False:
+            return "Nessuno"
+        return settings.dmz_host
+
+    @property
+    def extra_state_attributes(self):
+        return {"attiva": self._settings().dmz_enabled}
+
+
+class TimHubDhcpSensor(TimHubSettingsSensorBase):
+    """DHCP pool handed out on the LAN."""
+
+    entity_description = SensorEntityDescription(
+        key="dhcp_range", name="Intervallo DHCP", icon="mdi:ip-network-outline"
+    )
+
+    def __init__(self, coordinator: TimHubCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_dhcp_range"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self):
+        return self._settings().dhcp_range
+
+    @property
+    def extra_state_attributes(self):
+        settings = self._settings()
+        return {
+            "server_dhcp_attivo": settings.dhcp_enabled,
+            "primo_indirizzo": settings.dhcp_start,
+            "ultimo_indirizzo": settings.dhcp_end,
+            "durata_lease": settings.dhcp_lease_time,
+            "ip_del_modem": settings.lan_ip,
+            "maschera_di_rete": settings.lan_netmask,
+        }
+
+
+class TimHubSettingsSensor(TimHubSettingsSensorBase):
+    """Every setting read from the modem, as attributes.
+
+    The named sensors cover the common cases; this one exposes the rest (and
+    makes it visible what a different firmware calls its fields).
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    entity_description = SensorEntityDescription(
+        key="modem_settings", name="Impostazioni modem", icon="mdi:cog"
+    )
+
+    def __init__(self, coordinator: TimHubCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_modem_settings"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self):
+        if self.coordinator.data is None:
+            return None
+        return sum(len(fields) for fields in self._settings().raw.values())
+
+    @property
+    def extra_state_attributes(self):
+        settings = self._settings()
+        return {
+            "pagine_lette": sorted(settings.raw),
+            "pagine_non_lette": settings.errors,
+            **{f"campi_{page}": _trimmed(fields) for page, fields in settings.raw.items()},
         }

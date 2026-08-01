@@ -6,14 +6,13 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import TimHubCoordinator
+from .entity import device_info as _device_info
 
 
 async def async_setup_entry(
@@ -22,16 +21,11 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator: TimHubCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([TimHubConnectivitySensor(coordinator, entry)])
-
-
-def _device_info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name=f"TIM Hub ({entry.data[CONF_HOST]})",
-        manufacturer="TIM / Technicolor",
-        model="TIM Hub (Technicolor)",
-        configuration_url=f"http://{entry.data[CONF_HOST]}",
+    async_add_entities(
+        [
+            TimHubConnectivitySensor(coordinator, entry),
+            TimHubDmzBinarySensor(coordinator, entry),
+        ]
     )
 
 
@@ -61,4 +55,33 @@ class TimHubConnectivitySensor(CoordinatorEntity[TimHubCoordinator], BinarySenso
         return {
             "wan_ip": conn.wan_ip,
             "ppp_state": conn.ppp_state,
+        }
+
+
+class TimHubDmzBinarySensor(CoordinatorEntity[TimHubCoordinator], BinarySensorEntity):
+    """Whether a LAN host is exposed in the DMZ."""
+
+    _attr_has_entity_name = True
+    _attr_name = "DMZ attiva"
+    _attr_icon = "mdi:security-network"
+
+    def __init__(self, coordinator: TimHubCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_dmz"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def is_on(self) -> bool | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.settings.dmz_enabled
+
+    @property
+    def extra_state_attributes(self):
+        if self.coordinator.data is None:
+            return {}
+        settings = self.coordinator.data.settings
+        return {
+            "host": settings.dmz_host,
+            "livello_firewall": settings.firewall_level,
         }

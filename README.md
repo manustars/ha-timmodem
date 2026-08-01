@@ -14,6 +14,22 @@ Integrazione custom (non ufficiale) per monitorare il modem **TIM Hub**
   delle chiamate più recenti come attributo
 - **Sensore "Chiamate perse"** – conteggio + elenco chiamate perse recenti
   + statistiche per dispositivo (FXS 1 / FXS 2)
+- **Sensore "Dispositivi connessi"** – quante schede di rete sono collegate,
+  con elenco (nome, IP rilasciato, MAC, tipo di collegamento) e tabella
+  markdown pronta per una card
+- **Un `device_tracker` per ogni scheda di rete** vista dal modem
+  (`is_connected`, IP, MAC, hostname): utile per automazioni di presenza
+- **Sensori impostazioni** – "Livello firewall", "Host DMZ",
+  "Intervallo DHCP" (con server DHCP, durata lease, IP e maschera della LAN)
+- **Sensore binario "DMZ attiva"**
+- **Sensore diagnostico "Impostazioni modem"** – tutti i campi letti dalle
+  pagine di configurazione, come attributi
+
+### Ogni quanto vengono letti i dati
+
+Connessione, chiamate e dispositivi a ogni ciclo (30 s di default); le
+impostazioni (firewall, DMZ, DHCP) al massimo ogni 5 minuti, perché
+richiedono quattro pagine in più e cambiano solo quando le modifichi.
 
 ## Cosa NON fa (ancora)
 
@@ -50,6 +66,27 @@ Questa integrazione è basata su:
 - **Registro chiamate**: endpoint `GET /modals/mmpbx-log-modal.lp`,
   analizzato dall'HTML reale restituito dal modem dell'utente (tabelle
   `#calllog` e `#stats`).
+- **Dispositivi e impostazioni**: `GET /modals/device-modal.lp` e
+  `GET /modals/{firewall,wanservices,ethernet,internet}-modal.lp`.
+  L'elenco delle pagine esistenti su questo firmware è stato verificato
+  interrogando il modem (le pagine assenti, es. `nat-modal.lp` o
+  `gateway-modal.lp`, rispondono 404). Il contenuto autenticato non è
+  ancora stato letto pagina per pagina: i parser non si basano sulla
+  posizione delle colonne né sul nome esatto dei campi, ma riconoscono le
+  righe dal MAC address e i campi per parola chiave (`dmz`+`enable`,
+  `firewall`+`level`, ...). Se un valore non viene riconosciuto lo trovi
+  comunque tra gli attributi del sensore "Impostazioni modem".
+
+### Verificare i parser sul proprio modem
+
+```bash
+pip install aiohttp beautifulsoup4
+python3 tools/dump_pages.py 192.168.0.1 admin --dump-dir /tmp/timhub
+```
+
+Lo script fa il login (password chiesta a runtime, mai salvata), stampa i
+dispositivi e le impostazioni riconosciute più tutti i campi grezzi letti
+da ogni pagina, e con `--dump-dir` salva l'HTML originale.
 
 La matematica SRP-6 (`srp6.py`) è stata testata con una simulazione
 completa client↔server prima della consegna: il calcolo lato client
